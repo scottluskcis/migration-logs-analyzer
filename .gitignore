@@ -1,5 +1,6 @@
 migrations/
 output/
+logs_analysis/
 
 .DS_Store
 local.sh

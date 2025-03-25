@@ -7,7 +7,7 @@ BASE_DIR="./migrations"
 TIMESTAMP=$(date +"%Y%m%d_%H%M%S")
 
 # Create output directory if it doesn't exist
-OUTPUT_DIR="./output"
+OUTPUT_DIR="./logs_analysis"
 mkdir -p "$OUTPUT_DIR"
 
 # Output files with timestamp
