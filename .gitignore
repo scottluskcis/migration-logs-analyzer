@@ -1,0 +1,7 @@
+migrations/
+output/
+
+.DS_Store
+local.sh
+
+*.tar.gz
