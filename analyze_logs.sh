@@ -1,13 +1,50 @@
 #!/bin/bash   
 
-# Set the base directory
-BASE_DIR="./migrations"
+# Default directory settings
+DEFAULT_BASE_DIR="./migrations"
+DEFAULT_OUTPUT_DIR="./logs_analysis"
+
+# Initialize with defaults
+BASE_DIR="$DEFAULT_BASE_DIR"
+OUTPUT_DIR="$DEFAULT_OUTPUT_DIR"
+
+# Display help function
+display_help() {
+    echo "Usage: $0 [options]"
+    echo "Options:"
+    echo "  -b, --base-dir DIR      Specify the base directory containing migration logs (default: $DEFAULT_BASE_DIR)"
+    echo "  -o, --output-dir DIR    Specify the output directory for analysis files (default: $DEFAULT_OUTPUT_DIR)"
+    echo "  -h, --help              Display this help message"
+    exit 1
+}
+
+# Parse command line options
+while [[ $# -gt 0 ]]; do
+    key="$1"
+    case $key in
+        -b|--base-dir)
+            BASE_DIR="$2"
+            shift 2
+            ;;
+        -o|--output-dir)
+            OUTPUT_DIR="$2"
+            shift 2
+            ;;
+        -h|--help)
+            display_help
+            ;;
+        *)
+            # Unknown option
+            echo "Unknown option: $1"
+            display_help
+            ;;
+    esac
+done
 
 # Create timestamp for unique output files
 TIMESTAMP=$(date +"%Y%m%d_%H%M%S")
 
 # Create output directory if it doesn't exist
-OUTPUT_DIR="./logs_analysis"
 mkdir -p "$OUTPUT_DIR"
 
 # Output files with timestamp
