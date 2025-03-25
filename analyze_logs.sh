@@ -3,10 +3,12 @@
 # Default directory settings
 DEFAULT_BASE_DIR="./migrations"
 DEFAULT_OUTPUT_DIR="./logs_analysis"
+DEFAULT_INCLUDE_POTENTIAL=true
 
 # Initialize with defaults
 BASE_DIR="$DEFAULT_BASE_DIR"
 OUTPUT_DIR="$DEFAULT_OUTPUT_DIR"
+INCLUDE_POTENTIAL="$DEFAULT_INCLUDE_POTENTIAL"
 
 # Display help function
 display_help() {
@@ -14,6 +16,8 @@ display_help() {
     echo "Options:"
     echo "  -b, --base-dir DIR      Specify the base directory containing migration logs (default: $DEFAULT_BASE_DIR)"
     echo "  -o, --output-dir DIR    Specify the output directory for analysis files (default: $DEFAULT_OUTPUT_DIR)"
+    echo "  -p, --include-potential Include potential errors in output (default: $DEFAULT_INCLUDE_POTENTIAL)"
+    echo "                          Use --include-potential=false to exclude"
     echo "  -h, --help              Display this help message"
     exit 1
 }
@@ -29,6 +33,23 @@ while [[ $# -gt 0 ]]; do
         -o|--output-dir)
             OUTPUT_DIR="$2"
             shift 2
+            ;;
+        -p|--include-potential)
+            if [[ "$2" == "false" ]]; then
+                INCLUDE_POTENTIAL=false
+            else
+                INCLUDE_POTENTIAL=true
+            fi
+            shift 2
+            ;;
+        -p=*|--include-potential=*)
+            val="${key#*=}"
+            if [[ "$val" == "false" ]]; then
+                INCLUDE_POTENTIAL=false
+            else
+                INCLUDE_POTENTIAL=true
+            fi
+            shift
             ;;
         -h|--help)
             display_help
@@ -64,6 +85,7 @@ TEMP_ERROR_COUNT=$(mktemp)
 
 echo "Starting migration log analysis..."
 echo "Analyzing files in $BASE_DIR..."
+echo "Include potential errors: $INCLUDE_POTENTIAL"
 
 # Function to process a repository's stderr file
 process_repo_stderr() {
@@ -224,16 +246,48 @@ if [[ -f "$TEMP_NORMALIZED_ERRORS" && -s "$TEMP_NORMALIZED_ERRORS" ]]; then
     done < "$TEMP_ERROR_COUNT"
 fi
 
+# Create a filtered CSV if we're not including potential errors
+FINAL_ERROR_CSV="$ERROR_CSV"
+if [ "$INCLUDE_POTENTIAL" = "false" ]; then
+    FILTERED_CSV="${ERROR_CSV%.csv}_confirmed_only.csv"
+    # Copy header from original CSV
+    head -n 1 "$ERROR_CSV" > "$FILTERED_CSV"
+    # Only include confirmed errors
+    grep ",\"confirmed\"," "$ERROR_CSV" >> "$FILTERED_CSV"
+    # Use this as our final CSV
+    FINAL_ERROR_CSV="$FILTERED_CSV"
+    
+    # Update counts for summary
+    potential_error_count=0
+    potential_migration_id_count=0
+fi
+
 # Generate summary and save to summary file
 summary_content="
 ==== ERROR SUMMARY ====
 Total repositories analyzed: $repo_count
-Repositories with confirmed errors: $confirmed_error_count
-Repositories with potential issues: $potential_error_count
-Total repositories with errors/issues: $((confirmed_error_count + potential_error_count))
+Repositories with confirmed errors: $confirmed_error_count"
 
-Migration IDs in confirmed errors: $confirmed_migration_id_count
-Migration IDs in potential issues: $potential_migration_id_count
+# Only include potential errors in summary if INCLUDE_POTENTIAL is true
+if [ "$INCLUDE_POTENTIAL" = "true" ]; then
+    summary_content+="
+Repositories with potential issues: $potential_error_count
+Total repositories with errors/issues: $((confirmed_error_count + potential_error_count))"
+else
+    summary_content+="
+Note: Potential errors are excluded based on --include-potential=false option"
+fi
+
+summary_content+="
+
+Migration IDs in confirmed errors: $confirmed_migration_id_count"
+
+if [ "$INCLUDE_POTENTIAL" = "true" ]; then
+    summary_content+="
+Migration IDs in potential issues: $potential_migration_id_count"
+fi
+
+summary_content+="
 Unique error patterns found: $unique_error_count
 
 ==== ERROR CATEGORIES ====
@@ -241,12 +295,18 @@ CONFIRMED ERRORS - These indicate definite migration failures:
 - \"Migration Failed\" messages
 - \"Git source migration failed\" messages
 - \"An unexpected system error has caused the migration to fail\" messages
-- \"API rate limit exceeded\" messages
+- \"API rate limit exceeded\" messages"
+
+if [ "$INCLUDE_POTENTIAL" = "true" ]; then
+    summary_content+="
 
 POTENTIAL ISSUES - These may not indicate actual failures:
 - \"Failed to lookup the Organization ID\" messages
 - \"Failed to get migration state\" messages
-- Other error messages that don't clearly indicate migration failure
+- Other error messages that don't clearly indicate migration failure"
+fi
+
+summary_content+="
 
 ==== UNIQUE ERROR PATTERNS ===="
 
@@ -261,13 +321,13 @@ else
 fi
 
 # Add the output files section
-echo -e "\n==== OUTPUT FILES ====
-CSV error report: $ERROR_CSV
-Error summary: $ERROR_SUMMARY" >> "$ERROR_SUMMARY"
+echo -e "\n==== OUTPUT FILES ====" >> "$ERROR_SUMMARY"
+echo "CSV error report: $FINAL_ERROR_CSV" >> "$ERROR_SUMMARY"
+echo "Error summary: $ERROR_SUMMARY" >> "$ERROR_SUMMARY"
 
 # Clean up temporary files
 rm -f "$TEMP_ERROR_MESSAGES" "$TEMP_NORMALIZED_ERRORS" "$TEMP_ERROR_MESSAGES.tmp" "$TEMP_ERROR_COUNT" "$TEMP_UNIQUE_ERRORS"
 
 echo "Analysis complete! Results saved to:"
-echo "- $ERROR_CSV"
+echo "- $FINAL_ERROR_CSV"
 echo "- $ERROR_SUMMARY"
