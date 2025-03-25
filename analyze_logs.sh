@@ -11,32 +11,29 @@ OUTPUT_DIR="./output"
 mkdir -p "$OUTPUT_DIR"
 
 # Output files with timestamp
-ERROR_DETAILS="$OUTPUT_DIR/error_details_$TIMESTAMP.txt"
-CONFIRMED_ERRORS="$OUTPUT_DIR/confirmed_errors_$TIMESTAMP.txt"
-POTENTIAL_ERRORS="$OUTPUT_DIR/potential_errors_$TIMESTAMP.txt"
+ERROR_CSV="$OUTPUT_DIR/migration_errors_$TIMESTAMP.csv"
 ERROR_SUMMARY="$OUTPUT_DIR/error_summary_$TIMESTAMP.txt"
-UNIQUE_ERRORS="$OUTPUT_DIR/unique_errors_$TIMESTAMP.txt"
 
 # Clear or create output files
-> "$ERROR_DETAILS"
-> "$CONFIRMED_ERRORS"
-> "$POTENTIAL_ERRORS"
 > "$ERROR_SUMMARY"
-> "$UNIQUE_ERRORS"
+
+# Create CSV file with headers
+echo "repository_name,migration_id,error_message,error_type,directory_path" > "$ERROR_CSV"
 
 # Create a temporary file to store all error messages for later processing
 TEMP_ERROR_MESSAGES=$(mktemp)
 TEMP_NORMALIZED_ERRORS=$(mktemp)
+TEMP_ERROR_COUNT=$(mktemp)
 
-echo "Starting migration log analysis..." | tee -a "$ERROR_DETAILS"
-echo "Analyzing stderr files in $BASE_DIR..." | tee -a "$ERROR_DETAILS"
-echo "--------------------------------------------" | tee -a "$ERROR_DETAILS"
+echo "Starting migration log analysis..."
+echo "Analyzing stderr files in $BASE_DIR..."
 
 # Function to process a repository's stderr file
 process_repo_stderr() {
     local repo_path="$1"
     local repo_name="$(basename "$repo_path")"
     local stderr_file="$repo_path/stderr"
+    local parent_dir="$(dirname "$repo_path")"
     
     # Check if stderr file exists and has content with ERROR
     if [[ -f "$stderr_file" && -s "$stderr_file" ]] && grep -q "\[ERROR\]" "$stderr_file"; then
@@ -51,38 +48,7 @@ process_repo_stderr() {
            grep -q "API rate limit exceeded" "$stderr_file"; then
             is_confirmed_error=1
             error_type="confirmed"
-            output_file="$CONFIRMED_ERRORS"
-        else
-            output_file="$POTENTIAL_ERRORS"
         fi
-        
-        # Record error details
-        echo "Errors found in repository: $repo_name ($error_type error)" | tee -a "$ERROR_DETAILS"
-        echo "Error details:" | tee -a "$ERROR_DETAILS"
-        grep "\[ERROR\]" "$stderr_file" | tee -a "$ERROR_DETAILS"
-        
-        # Extract and store error messages for later processing
-        grep "\[ERROR\]" "$stderr_file" | sed 's/.*\[ERROR\] //' > "$TEMP_ERROR_MESSAGES.tmp"
-        
-        # Normalize error messages by replacing specific IDs with placeholders
-        while IFS= read -r line; do
-            # Save the original message for detailed reporting
-            echo "$line" >> "$TEMP_ERROR_MESSAGES"
-            
-            # Normalize messages with Migration ID patterns
-            if [[ "$line" =~ Migration\ Failed\.|Failed\ to\ get\ migration\ state\ for\ migration ]]; then
-                # Replace RM_... with RM_ID
-                normalized=$(echo "$line" | sed -E 's/(RM_[a-zA-Z0-9_-]+)/RM_ID/g')
-                echo "$normalized" >> "$TEMP_NORMALIZED_ERRORS"
-            elif [[ "$line" =~ Repository\ with\ name ]]; then
-                # Replace repository names with REPO_NAME
-                normalized=$(echo "$line" | sed -E 's/Repository with name ([a-zA-Z0-9_-]+) already exists/Repository with name REPO_NAME already exists/g')
-                echo "$normalized" >> "$TEMP_NORMALIZED_ERRORS"
-            else
-                # Keep other messages as is
-                echo "$line" >> "$TEMP_NORMALIZED_ERRORS"
-            fi
-        done < "$TEMP_ERROR_MESSAGES.tmp"
         
         # Extract migration IDs from error messages - replacing mapfile with a more compatible approach
         local migration_id_array=()
@@ -103,21 +69,37 @@ process_repo_stderr() {
         # Remove duplicates
         migration_ids=($(echo "${migration_ids[@]}" | tr ' ' '\n' | sort -u | tr '\n' ' '))
         
-        # Write repository and its migration IDs to the appropriate output file
-        {
-            echo "Repository: $repo_name"
-            echo "  Migration IDs:"
+        # Extract and store error messages and write to CSV
+        while IFS= read -r line; do
+            # Save the original message for detailed reporting
+            error_message=$(echo "$line" | sed 's/.*\[ERROR\] //')
+            echo "$error_message" >> "$TEMP_ERROR_MESSAGES"
+            
+            # Add to normalized errors for pattern counting
+            if [[ "$error_message" =~ Migration\ Failed\.|Failed\ to\ get\ migration\ state\ for\ migration ]]; then
+                normalized=$(echo "$error_message" | sed -E 's/(RM_[a-zA-Z0-9_-]+)/RM_ID/g')
+                echo "$normalized" >> "$TEMP_NORMALIZED_ERRORS"
+            elif [[ "$error_message" =~ Repository\ with\ name ]]; then
+                normalized=$(echo "$error_message" | sed -E 's/Repository with name ([a-zA-Z0-9_-]+) already exists/Repository with name REPO_NAME already exists/g')
+                echo "$normalized" >> "$TEMP_NORMALIZED_ERRORS"
+            else
+                echo "$error_message" >> "$TEMP_NORMALIZED_ERRORS"
+            fi
+            
+            # Write to CSV - if there are migration IDs, write one row per ID
+            # Otherwise write a single row with empty migration_id
             if [ ${#migration_ids[@]} -eq 0 ]; then
-                echo "    No migration IDs found"
+                # Escape double quotes in error message and enclose in quotes
+                escaped_error=$(echo "$error_message" | sed 's/"/""/g')
+                echo "\"$repo_name\",\"\",\"$escaped_error\",\"$error_type\",\"$parent_dir\"" >> "$ERROR_CSV"
             else
                 for id in "${migration_ids[@]}"; do
-                    echo "    - $id"
+                    escaped_error=$(echo "$error_message" | sed 's/"/""/g')
+                    echo "\"$repo_name\",\"$id\",\"$escaped_error\",\"$error_type\",\"$parent_dir\"" >> "$ERROR_CSV"
                 done
             fi
-            echo "--------------------------------------------"
-        } >> "$output_file"
+        done < <(grep "\[ERROR\]" "$stderr_file")
         
-        echo "--------------------------------------------" | tee -a "$ERROR_DETAILS"
         return $is_confirmed_error  # Return 1 for confirmed error, 0 for potential
     fi
     return 255  # No error found
@@ -129,19 +111,6 @@ potential_error_count=0
 repo_count=0
 confirmed_migration_id_count=0
 potential_migration_id_count=0
-
-# Add headers to output files
-echo "CONFIRMED ERRORS" > "$CONFIRMED_ERRORS"
-echo "============================================" >> "$CONFIRMED_ERRORS"
-echo "" >> "$CONFIRMED_ERRORS"
-
-echo "POTENTIAL ERRORS" > "$POTENTIAL_ERRORS"
-echo "============================================" >> "$POTENTIAL_ERRORS"
-echo "" >> "$POTENTIAL_ERRORS"
-
-echo "UNIQUE ERROR MESSAGES" > "$UNIQUE_ERRORS"
-echo "============================================" >> "$UNIQUE_ERRORS"
-echo "" >> "$UNIQUE_ERRORS"
 
 # Handle the nested directory structure - avoid using pipes with while loops
 # to prevent subshell variable scope issues
@@ -188,26 +157,29 @@ for migration_log_dir in "${migration_log_dirs[@]}"; do
     done
 done
 
-# Count unique migration IDs in the output files
-confirmed_migration_id_count=$(grep -c "    - RM_" "$CONFIRMED_ERRORS" || echo 0)
-potential_migration_id_count=$(grep -c "    - RM_" "$POTENTIAL_ERRORS" || echo 0)
+# Count unique migration IDs in the CSV file
+confirmed_migration_id_count=$(grep -c ",\"confirmed\"," "$ERROR_CSV" || echo 0)
+potential_migration_id_count=$(grep -c ",\"potential\"," "$ERROR_CSV" || echo 0)
 
-# Process and count unique error messages
+# Process and count unique error patterns
 unique_error_count=0
+unique_errors=""
+
 if [[ -f "$TEMP_NORMALIZED_ERRORS" && -s "$TEMP_NORMALIZED_ERRORS" ]]; then
-    # echo "CONSOLIDATED ERROR MESSAGES:" >> "$UNIQUE_ERRORS"
-    # echo "============================================" >> "$UNIQUE_ERRORS"
-    #echo "" >> "$UNIQUE_ERRORS"
+    # Create a list of unique errors with their counts
+    sort "$TEMP_NORMALIZED_ERRORS" | uniq -c | sort -nr > "$TEMP_ERROR_COUNT"
+    unique_error_count=$(wc -l < "$TEMP_ERROR_COUNT" | tr -d ' ')
     
-    # Sort normalized error messages, count unique occurrences, sort by count in descending order
-    sort "$TEMP_NORMALIZED_ERRORS" | uniq -c | sort -nr | while read -r count message; do
-        # For all messages, just show the count and message
-        echo "[$count occurrences] $message" >> "$UNIQUE_ERRORS"
-        ((unique_error_count++))
-    done
+    # Format the list of unique errors directly into a temporary file
+    TEMP_UNIQUE_ERRORS=$(mktemp)
+    while IFS= read -r line; do
+        count=$(echo "$line" | awk '{print $1}')
+        error=$(echo "$line" | cut -d' ' -f2-)
+        echo "- $count occurrences: $error" >> "$TEMP_UNIQUE_ERRORS"
+    done < "$TEMP_ERROR_COUNT"
 fi
 
-# Generate summary and save to summary file and error details
+# Generate summary and save to summary file
 summary_content="
 ==== ERROR SUMMARY ====
 Total repositories analyzed: $repo_count
@@ -231,22 +203,26 @@ POTENTIAL ISSUES - These may not indicate actual failures:
 - \"Failed to get migration state\" messages
 - Other error messages that don't clearly indicate migration failure
 
-==== OUTPUT FILES ====
-Detailed error log: $ERROR_DETAILS
-Confirmed errors (repos + migration IDs): $CONFIRMED_ERRORS
-Potential issues (repos + migration IDs): $POTENTIAL_ERRORS
-Consolidated error messages: $UNIQUE_ERRORS
-Error summary: $ERROR_SUMMARY
-"
+==== UNIQUE ERROR PATTERNS ===="
 
-echo "$summary_content" | tee -a "$ERROR_DETAILS" > "$ERROR_SUMMARY"
+# Write the summary content to the file
+echo "$summary_content" > "$ERROR_SUMMARY"
+
+# Append unique errors directly from the temp file if it exists
+if [[ -f "$TEMP_UNIQUE_ERRORS" && -s "$TEMP_UNIQUE_ERRORS" ]]; then
+    cat "$TEMP_UNIQUE_ERRORS" >> "$ERROR_SUMMARY"
+else
+    echo -e "\nNo unique error patterns found." >> "$ERROR_SUMMARY"
+fi
+
+# Add the output files section
+echo -e "\n==== OUTPUT FILES ====
+CSV error report: $ERROR_CSV
+Error summary: $ERROR_SUMMARY" >> "$ERROR_SUMMARY"
 
 # Clean up temporary files
-rm -f "$TEMP_ERROR_MESSAGES" "$TEMP_NORMALIZED_ERRORS" "$TEMP_ERROR_MESSAGES.tmp"
+rm -f "$TEMP_ERROR_MESSAGES" "$TEMP_NORMALIZED_ERRORS" "$TEMP_ERROR_MESSAGES.tmp" "$TEMP_ERROR_COUNT" "$TEMP_UNIQUE_ERRORS"
 
 echo "Analysis complete! Results saved to:"
-echo "- $ERROR_DETAILS"
-echo "- $CONFIRMED_ERRORS"
-echo "- $POTENTIAL_ERRORS"
-echo "- $UNIQUE_ERRORS"
+echo "- $ERROR_CSV"
 echo "- $ERROR_SUMMARY"
