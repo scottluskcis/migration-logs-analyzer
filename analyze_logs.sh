@@ -26,7 +26,7 @@ TEMP_NORMALIZED_ERRORS=$(mktemp)
 TEMP_ERROR_COUNT=$(mktemp)
 
 echo "Starting migration log analysis..."
-echo "Analyzing stderr files in $BASE_DIR..."
+echo "Analyzing files in $BASE_DIR..."
 
 # Function to process a repository's stderr file
 process_repo_stderr() {
@@ -79,8 +79,16 @@ process_repo_stderr() {
             if [[ "$error_message" =~ Migration\ Failed\.|Failed\ to\ get\ migration\ state\ for\ migration ]]; then
                 normalized=$(echo "$error_message" | sed -E 's/(RM_[a-zA-Z0-9_-]+)/RM_ID/g')
                 echo "$normalized" >> "$TEMP_NORMALIZED_ERRORS"
-            elif [[ "$error_message" =~ Repository\ with\ name ]]; then
-                normalized=$(echo "$error_message" | sed -E 's/Repository with name ([a-zA-Z0-9_-]+) already exists/Repository with name REPO_NAME already exists/g')
+            elif [[ "$error_message" =~ "Repository with name" && "$error_message" =~ "already exists" ]]; then
+                # Handle repository name conflict errors consistently
+                # First normalize the repo name
+                normalized=$(echo "$error_message" | sed -E 's/Repository with name ([a-zA-Z0-9_-]+) already exists/Repository with name {REPO_NAME} already exists/g')
+                
+                # Then handle the metadata part if present
+                if [[ "$normalized" =~ "meta:" ]]; then
+                    normalized=$(echo "$normalized" | sed -E 's/meta:.*$/meta: {REPO_DETAILS}/')
+                fi
+                
                 echo "$normalized" >> "$TEMP_NORMALIZED_ERRORS"
             else
                 echo "$error_message" >> "$TEMP_NORMALIZED_ERRORS"
